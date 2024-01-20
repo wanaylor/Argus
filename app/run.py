@@ -24,7 +24,8 @@ port = os.getenv('UPSTREAM_PORT')
 route = os.getenv('UPSTREAM_ROUTE')
 conf_thres = float(os.getenv('CONF_THRES'))
 detection_reset_seconds = int(os.getenv('DETECTION_RESET_SECONDS'))
-vs = cv2.VideoCapture(f'{proto}://{address}:{port}/{route}')
+url = os.getenv('UPSTREAM_URL')
+vs = cv2.VideoCapture(url)
 model = YOLOV8Inference('./models/yolov8n.onnx', conf_thres=conf_thres)
 time.sleep(2.0)
 
@@ -96,6 +97,7 @@ def detect_motion(frameCount):
         notify(cls_ids, frame)
         end = time.time()
         print(f'{datetime.datetime.now()} Detection took {end-start} s')
+        outputFrame = frame
         frame = None
         time.sleep(1)
 
@@ -106,6 +108,7 @@ def generate():
         with lock:
             if outputFrame is None:
                 continue
+            outputFrame = cv2.resize(outputFrame, (1600,900))
             (flag, encodedImage) = cv2.imencode(".jpg", outputFrame)
             if not flag:
                 continue

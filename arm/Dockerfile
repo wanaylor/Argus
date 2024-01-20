@@ -41,5 +41,5 @@ RUN python3 -m pip install --no-cache-dir requests
 # ultralytics for the model
 #RUN python3 -m pip install --no-cache-dir ultralytics
 
-COPY ./app /YOLO_WebStream
-WORKDIR /YOLO_WebStream
+COPY ./app /Argus
+WORKDIR /Argus
