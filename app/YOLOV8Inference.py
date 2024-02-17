@@ -113,7 +113,7 @@ class YOLOV8Inference(object):
         #prof_file = self.session.end_profiling()
         #print(prof_file)
 
-#        print(f"Inference time: {(time.perf_counter() - start)*1000:.2f} ms")
+        print(f"Inference time: {(time.perf_counter() - start)*1000:.2f} ms")
         return outputs
 
     def process_output(self, output):

@@ -3,6 +3,8 @@ from imutils.video import VideoStream
 from flask import Response
 from flask import Flask
 from flask import render_template
+from functools import wraps
+import pdb
 import datetime
 import os
 import threading
@@ -12,113 +14,119 @@ import requests
 import time
 import cv2
 
-# initialize the output frame and a lock used to ensure thread-safe
-# exchanges of the output frames (useful when multiple browsers/tabs
-# are viewing the stream)
-outputFrame = None
-lock = threading.Lock()
-app = Flask(__name__)
-proto = os.getenv('UPSTREAM_PROTO')
-address = os.getenv('UPSTREAM_IP')
-port = os.getenv('UPSTREAM_PORT')
-route = os.getenv('UPSTREAM_ROUTE')
-conf_thres = float(os.getenv('CONF_THRES'))
-detection_reset_seconds = int(os.getenv('DETECTION_RESET_SECONDS'))
-url = os.getenv('UPSTREAM_URL')
-vs = cv2.VideoCapture(url)
-model = YOLOV8Inference('./models/yolov8n.onnx', conf_thres=conf_thres)
-time.sleep(2.0)
+class Runtime(Flask):
+    def __init__(self, last_detection_dict):
+        super().__init__('Argus')
+        self.add_url_rule('/video_feed', view_func=self.video_feed)
+        self.add_url_rule('/', view_func=self.index)
 
-@app.route("/")
-def index():
-    # return the rendered template
-    return render_template("index.html")
+        self.last_detection_dict = last_detection_dict
+        self.outputFrame = None
+        self.lock = threading.Lock()
+        self.app = Flask(__name__)
+        self.proto = os.getenv('UPSTREAM_PROTO')
+        self.address = os.getenv('UPSTREAM_IP')
+        self.port = os.getenv('UPSTREAM_PORT')
+        self.upstream_route = os.getenv('UPSTREAM_ROUTE')
+        self.conf_thres = float(os.getenv('CONF_THRES'))
+        self.detection_reset_seconds = int(os.getenv('DETECTION_RESET_SECONDS'))
+        self.url = os.getenv('UPSTREAM_URL')
+        self.vs = cv2.VideoCapture(self.url)
+        self.model = YOLOV8Inference('./models/yolov8n.onnx', conf_thres=self.conf_thres)
+        t = threading.Thread(target=self.poll_frames)
+        t.daemon = True
+        t.start()
+        print(f"{datetime.datetime.now()} Sleeping to start polling")
+        time.sleep(2.0)
+        t2 = threading.Thread(target=self.detect_motion, args=(
+            args["frame_count"],))
+        t2.daemon = True
+        t2.start()
 
-def notify(cls_ids, frame):
-    global vs
-    for clss in cls_ids:
-        obj = model.class_names[clss]
-        if obj in last_detection_dict.keys():
-            print(f"{datetime.datetime.now()} Got Detection! {obj}")
-            if (time.time() - last_detection_dict[obj] > detection_reset_seconds): 
-                last_detection_dict[obj] = time.time()
-                start = time.time()
-                cv2.imwrite('detection.jpg', frame)
-                print(f"{datetime.datetime.now()} Writing detection.jpeg to disk took {time.time() - start}s")
-                print(f"{datetime.datetime.now()} Source inside notify is {vs.get(0)}")
-                r = requests.post("https://api.pushover.net/1/messages.json", data = {
-                  "token": os.getenv('APP_TOKEN'),
-                  "user": os.getenv('USER_TOKEN'),
-                  "message": f"{obj} detected on {route}",
-                },
-                files = {
-                  "attachment": ("image.jpg", open("detection.jpg", "rb"), "image/jpeg")
-                })
+    def index(self):
+        # return the rendered template
+        return render_template("index.html")
 
-def poll_frames():
-    global vs, outputFrame, lock
-    while True:
-        start = time.time()
-        ret, frame = vs.read()
-        if ret == True:
-            if frame is None:
-                print(f"{datetime.datetime.now()} Got None from frame, re-establishing video source")
-                vs.release()
-                vs = cv2.VideoCapture(f'{proto}://{address}:{port}/{route}')
-                continue
-            try:
-                with lock:
-                    outputFrame = frame.copy()
-                print(f"Capture position is {vs.get(0)}")
-                frame = None
-            except Exception as e:
-                print(f"{datetime.datetime.now()} Error processing frame: {e}")
+    def notify(self, cls_ids, frame):
+        for clss in cls_ids:
+            obj = self.model.class_names[clss]
+            if obj in self.last_detection_dict.keys():
+                print(f"{datetime.datetime.now()} Got Detection! {obj}")
+                if (time.time() - self.last_detection_dict[obj] > self.detection_reset_seconds): 
+                    self.last_detection_dict[obj] = time.time()
+                    start = time.time()
+                    cv2.imwrite('detection.jpg', frame)
+                    print(f"{datetime.datetime.now()} Writing detection.jpeg to disk took {time.time() - start}s")
+                    print(f"{datetime.datetime.now()} Source inside notify is {self.vs.get(0)}")
+                    r = requests.post("https://api.pushover.net/1/messages.json", data = {
+                      "token": os.getenv('APP_TOKEN'),
+                      "user": os.getenv('USER_TOKEN'),
+                      "message": f"{obj} detected on {self.upstream_route}",
+                    },
+                    files = {
+                      "attachment": ("image.jpg", open("detection.jpg", "rb"), "image/jpeg")
+                    })
+
+    def poll_frames(self):
+        while True:
+            start = time.time()
+            ret, frame = self.vs.read()
+            if ret == True:
+                if frame is None:
+                    print(f"{datetime.datetime.now()} Got None from frame, re-establishing video source")
+                    self.vs.release()
+                    self.vs = cv2.VideoCapture(f'{self.proto}://{self.address}:{self.port}/{self.upstream_route}')
+                    continue
+                try:
+                    with self.lock:
+                        self.outputFrame = frame.copy()
+                    print(f"Capture position is {self.vs.get(0)}")
+                    frame = None
+                except Exception as e:
+                    print(f"{datetime.datetime.now()} Error processing frame: {e}")
+                    time.sleep(10)
+                    continue
+            else:
+                print(f"{datetime.datetime.now()} Frame read didn't return True, restarting stream")
+                self.vs.release()
+                self.vs = cv2.VideoCapture(f'{self.proto}://{self.address}:{self.port}/{self.upstream_route}')
+
+    def detect_motion(self, frameCount):
+        total = 0
+
+        while True:
+            if self.outputFrame is None:
                 time.sleep(10)
                 continue
-        else:
-            print(f"{datetime.datetime.now()} Frame read didn't return True, restarting stream")
-            vs.release()
-            vs = cv2.VideoCapture(f'{proto}://{address}:{port}/{route}')
-
-def detect_motion(frameCount):
-    global outputFrame, lock
-    total = 0
-
-    while True:
-        if outputFrame is None:
-            time.sleep(10)
-            continue
-        with lock:
-            frame = outputFrame.copy()
-        start = time.time()
-        boxes, scores, cls_ids = model(frame)
-        frame = model.draw_detections()
-        print(f"cls_ids is {cls_ids}")
-        notify(cls_ids, frame)
-        end = time.time()
-        print(f'{datetime.datetime.now()} Detection took {end-start} s')
-        outputFrame = frame
-        frame = None
-        time.sleep(1)
+            with self.lock:
+                frame = self.outputFrame.copy()
+            start = time.time()
+            boxes, scores, cls_ids = self.model(frame)
+            frame = self.model.draw_detections()
+            print(f"cls_ids is {cls_ids}")
+            self.notify(cls_ids, frame)
+            end = time.time()
+            print(f'{datetime.datetime.now()} Detection took {end-start} s')
+            self.outputFrame = frame
+            frame = None
+            time.sleep(1)
 
 
-def generate():
-    global outputFrame, lock, model
-    while True:
-        with lock:
-            if outputFrame is None:
-                continue
-            outputFrame = cv2.resize(outputFrame, (1600,900))
-            (flag, encodedImage) = cv2.imencode(".jpg", outputFrame)
-            if not flag:
-                continue
-        yield(b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + 
-            bytearray(encodedImage) + b'\r\n')
+    def generate(self):
+        while True:
+            with self.lock:
+                if self.outputFrame is None:
+                    continue
+                self.outputFrame = cv2.resize(self.outputFrame, (1600,900))
+                (flag, encodedImage) = cv2.imencode(".jpg", self.outputFrame)
+                if not flag:
+                    continue
+            yield(b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + 
+                bytearray(encodedImage) + b'\r\n')
 
-@app.route("/video_feed")
-def video_feed():
-    return Response(generate(),
-        mimetype = "multipart/x-mixed-replace; boundary=frame")
+    def video_feed(self):
+        return Response(self.generate(),
+            mimetype = "multipart/x-mixed-replace; boundary=frame")
 
 if __name__ == '__main__':
     # construct the argument parser and parse command line arguments
@@ -132,17 +140,8 @@ if __name__ == '__main__':
     ap.add_argument("-d", "--detections", nargs="*",
                     help="points of interest for detection i.e. person car")
     args = vars(ap.parse_args())
+    detection_reset_seconds = int(os.getenv('DETECTION_RESET_SECONDS'))
     last_detection_dict = {x: time.time() - detection_reset_seconds for x in args['detections']}
-    t = threading.Thread(target=poll_frames)
-    t.daemon = True
-    t.start()
-    print(f"{datetime.datetime.now()} Sleeping for a minute to start polling")
-    t2 = threading.Thread(target=detect_motion, args=(
-        args["frame_count"],))
-    t2.daemon = True
-    t2.start()
-    # start the flask app
-    app.run(host=args["ip"], port=args["port"], debug=True,
+    rt = Runtime(last_detection_dict=last_detection_dict)
+    rt.run(host=args["ip"], port=args["port"], debug=True,
         threaded=True, use_reloader=False)
-# release the video stream pointer
-vs.stop()
