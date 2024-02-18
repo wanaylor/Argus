@@ -33,6 +33,10 @@ class Runtime(Flask):
         self.url = os.getenv('UPSTREAM_URL')
         self.vs = cv2.VideoCapture(self.url)
         self.model = YOLOV8Inference('./models/yolov8n.onnx', conf_thres=self.conf_thres)
+
+        self.tracking_valid = False
+        self.tracker = cv2.TrackerMIL()
+
         t = threading.Thread(target=self.poll_frames)
         t.daemon = True
         t.start()
@@ -80,7 +84,6 @@ class Runtime(Flask):
                 try:
                     with self.lock:
                         self.outputFrame = frame.copy()
-                    print(f"Capture position is {self.vs.get(0)}")
                     frame = None
                 except Exception as e:
                     print(f"{datetime.datetime.now()} Error processing frame: {e}")
