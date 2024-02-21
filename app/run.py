@@ -1,4 +1,5 @@
 from YOLOV8Inference import YOLOV8Inference
+from notifications.pushover import Pushover
 from imutils.video import VideoStream
 from flask import Response
 from flask import Flask
@@ -36,6 +37,8 @@ class Runtime(Flask):
 
         self.tracking_valid = False
         self.tracker = cv2.TrackerMIL()
+        self.notification = Pushover(os.getenv('USER_TOKEN'), os.getenv('APP_TOKEN'))
+        self.notification.to = "https://api.pushover.net/1/messages.json"
 
         t = threading.Thread(target=self.poll_frames)
         t.daemon = True
@@ -59,17 +62,9 @@ class Runtime(Flask):
                 if (time.time() - self.last_detection_dict[obj] > self.detection_reset_seconds): 
                     self.last_detection_dict[obj] = time.time()
                     start = time.time()
-                    cv2.imwrite('detection.jpg', frame)
-                    print(f"{datetime.datetime.now()} Writing detection.jpeg to disk took {time.time() - start}s")
-                    print(f"{datetime.datetime.now()} Source inside notify is {self.vs.get(0)}")
-                    r = requests.post("https://api.pushover.net/1/messages.json", data = {
-                      "token": os.getenv('APP_TOKEN'),
-                      "user": os.getenv('USER_TOKEN'),
-                      "message": f"{obj} detected on {self.upstream_route}",
-                    },
-                    files = {
-                      "attachment": ("image.jpg", open("detection.jpg", "rb"), "image/jpeg")
-                    })
+                    self.notification.message = f"{obj} detected on {self.upstream_route}"
+                    self.notification.frame = frame
+                    self.notification.send()
 
     def poll_frames(self):
         while True:
